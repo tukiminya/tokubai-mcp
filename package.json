@@ -1,0 +1,32 @@
+{
+  "name": "tokubai-mcp",
+  "version": "1.0.0",
+  "description": "",
+  "keywords": [],
+  "license": "Apache-2.0",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@hono/mcp": "^0.3.5",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "hono": "^4.13.16",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.77.0",
+    "oxlint": "^1.92.0",
+    "wrangler": "^4.158.0"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.18.0",
+      "onFail": "download"
+    }
+  },
+  "packageManager": "pnpm@12.18.0"
+}

@@ -1,8 +1,15 @@
 {
-  "include": ["src"],
+  "include": ["src", "tests", "scripts"],
   "compilerOptions": {
     "module": "esnext",
     "target": "esnext",
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "skipLibCheck": true,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["node"]
   }
 }

@@ -3,5 +3,9 @@
   "name": "tokubai-mcp",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-04",
-  "compatibility_flags": ["nodejs_compat"]
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
 }

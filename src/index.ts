@@ -1,25 +1,36 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { Hono } from "hono";
+import { createMcpServer } from "./mcp.ts";
+import { TokubaiClient } from "./tokubai.ts";
 
-const app = new Hono();
+export function createApp(client = new TokubaiClient()) {
+  const app = new Hono();
+  app.get("/", (c) => c.json({ name: "tokubai-mcp", version: "1.0.0", endpoint: "/mcp" }));
 
-// Your MCP server implementation
-const mcpServer = new McpServer({
-  name: "tokubai-mcp",
-  version: "1.0.0",
-});
+  // Stateless HTTP: each request can run on a different Worker isolate.
+  app.post("/mcp", async (c) => {
+    const server = createMcpServer(client);
+    const transport = new StreamableHTTPTransport({ enableJsonResponse: true });
+    await server.connect(transport);
+    try {
+      return (await transport.handleRequest(c)) ?? c.body(null, 202);
+    } finally {
+      await server.close();
+    }
+  });
+  app.all("/mcp", (c) => {
+    c.header("Allow", "POST");
+    return c.json(
+      {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32000, message: "Method not allowed. Use stateless MCP POST requests." },
+      },
+      405,
+    );
+  });
 
-// Initialize the transport
-const transport = new StreamableHTTPTransport();
+  return app;
+}
 
-app.all("/mcp", async (c) => {
-  if (!mcpServer.isConnected()) {
-    // Connect the mcp with the transport
-    await mcpServer.connect(transport);
-  }
-
-  return transport.handleRequest(c);
-});
-
-export default app;
+export default createApp();

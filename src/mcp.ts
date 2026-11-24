@@ -1,7 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, RequestId } from "@modelcontextprotocol/sdk/types.js";
+import { Cause, Effect, Option } from "effect";
 import { z } from "zod";
-import { TokubaiError } from "./http.ts";
+import { errorLogger, TokubaiError } from "./errors.ts";
 import { TokubaiClient } from "./tokubai.ts";
 import {
   flyersInputSchema,
@@ -19,31 +20,46 @@ const annotations = {
   openWorldHint: true,
 };
 
-async function toolResult(operation: () => Promise<object>): Promise<CallToolResult> {
-  try {
-    const data = await operation();
+function toolResult<A extends Record<string, unknown>>(
+  tool: string,
+  requestId: RequestId,
+  outputSchema: z.ZodType<A>,
+  operation: () => Effect.Effect<A, TokubaiError | z.ZodError>,
+): Promise<CallToolResult> {
+  const result = Effect.gen(function* () {
+    const data = yield* operation();
+    // The SDK converts output validation exceptions to tool errors on its own.
+    // Validate here so the cause is captured by the same logger.
+    const parsed = outputSchema.safeParse(data);
+    if (!parsed.success) return yield* Effect.die(parsed.error);
     return {
-      content: [{ type: "text", text: JSON.stringify(data) }],
-      structuredContent: { ...data },
-    };
-  } catch (error) {
-    const code =
-      error instanceof TokubaiError
-        ? error.code
-        : error instanceof z.ZodError
-          ? "INVALID_INPUT"
-          : "INTERNAL_ERROR";
-    const message =
-      error instanceof TokubaiError
-        ? error.message
-        : error instanceof z.ZodError
-          ? "入力内容を確認してください。"
-          : "情報の取得中にエラーが発生しました。";
-    return {
-      isError: true,
-      content: [{ type: "text", text: JSON.stringify({ error: { code, message } }) }],
-    };
-  }
+      content: [{ type: "text", text: JSON.stringify(parsed.data) }],
+      structuredContent: { ...parsed.data },
+    } satisfies CallToolResult;
+  });
+  return Effect.runPromise(
+    result.pipe(
+      Effect.catchCause((cause) => {
+        const failure = Option.getOrUndefined(Cause.findErrorOption(cause));
+        const error =
+          failure instanceof TokubaiError
+            ? { code: failure.code, message: failure.message }
+            : failure instanceof z.ZodError
+              ? { code: "INVALID_INPUT", message: "入力内容を確認してください。" }
+              : { code: "INTERNAL_ERROR", message: "情報の取得中にエラーが発生しました。" };
+        const result: CallToolResult = {
+          isError: true,
+          content: [{ type: "text", text: JSON.stringify({ error }) }],
+        };
+        return Effect.logError("MCP tool failed", cause).pipe(
+          Effect.annotateLogs({ code: error.code }),
+          Effect.as(result),
+        );
+      }),
+      Effect.annotateLogs({ tool, requestId }),
+      Effect.provide(errorLogger),
+    ),
+  );
 }
 
 export function createMcpServer(client = new TokubaiClient()): McpServer {
@@ -58,7 +74,10 @@ export function createMcpServer(client = new TokubaiClient()): McpServer {
       outputSchema: searchResultSchema,
       annotations,
     },
-    (input, extra) => toolResult(() => client.searchByPostalCode(input, extra.signal)),
+    (input, extra) =>
+      toolResult("search_stores_by_postal_code", extra.requestId, searchResultSchema, () =>
+        client.searchByPostalCodeEffect(input, extra.signal),
+      ),
   );
   server.registerTool(
     "search_stores_by_prefecture",
@@ -70,7 +89,10 @@ export function createMcpServer(client = new TokubaiClient()): McpServer {
       outputSchema: searchResultSchema,
       annotations,
     },
-    (input, extra) => toolResult(() => client.searchByPrefecture(input, extra.signal)),
+    (input, extra) =>
+      toolResult("search_stores_by_prefecture", extra.requestId, searchResultSchema, () =>
+        client.searchByPrefectureEffect(input, extra.signal),
+      ),
   );
   server.registerTool(
     "search_stores",
@@ -82,7 +104,10 @@ export function createMcpServer(client = new TokubaiClient()): McpServer {
       outputSchema: searchResultSchema,
       annotations,
     },
-    (input, extra) => toolResult(() => client.search(input, extra.signal)),
+    (input, extra) =>
+      toolResult("search_stores", extra.requestId, searchResultSchema, () =>
+        client.searchEffect(input, extra.signal),
+      ),
   );
   server.registerTool(
     "get_store_flyers",
@@ -94,7 +119,10 @@ export function createMcpServer(client = new TokubaiClient()): McpServer {
       outputSchema: flyersResultSchema,
       annotations,
     },
-    (input, extra) => toolResult(() => client.getFlyers(input, extra.signal)),
+    (input, extra) =>
+      toolResult("get_store_flyers", extra.requestId, flyersResultSchema, () =>
+        client.getFlyersEffect(input, extra.signal),
+      ),
   );
   return server;
 }

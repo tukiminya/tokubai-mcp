@@ -60,6 +60,39 @@ test("bounds requests and reports timeout", async () => {
   await assert.rejects(client.get("/"), { code: "TIMEOUT" });
 });
 
+test("times out while reading a response body and releases the reader", async () => {
+  const body = new ReadableStream<Uint8Array>();
+  let requestSignal: AbortSignal | null | undefined;
+  const client = new HtmlClient({
+    timeoutMs: 20,
+    fetcher: async (_input, init) => {
+      requestSignal = init?.signal;
+      return new Response(body, { headers: { "content-type": "text/html" } });
+    },
+  });
+  await assert.rejects(client.get("/"), { code: "TIMEOUT" });
+  assert.equal(requestSignal?.aborted, true);
+  assert.equal(body.locked, false);
+});
+
+test("cancels a pending request and preserves the caller's abort reason", async () => {
+  const controller = new AbortController();
+  const reason = new Error("caller aborted");
+  let requestSignal: AbortSignal | null | undefined;
+  const client = new HtmlClient({
+    fetcher: async (_input, init) => {
+      requestSignal = init?.signal;
+      controller.abort(reason);
+      return new Promise(() => {});
+    },
+  });
+  await assert.rejects(client.get("/", controller.signal), {
+    code: "TIMEOUT",
+    cause: reason,
+  });
+  assert.equal(requestSignal?.aborted, true);
+});
+
 test("distinguishes upstream errors from non-HTML responses", async () => {
   await assert.rejects(
     new HtmlClient({ fetcher: async () => new Response(null, { status: 429 }) }).get("/"),

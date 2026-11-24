@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { StreamableHTTPTransport } from "@hono/mcp";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createApp } from "../src/index.ts";
@@ -13,8 +14,14 @@ const app = createApp(
     new HtmlClient({
       fetcher: async (input) => {
         const url = new URL(String(input));
-        if (url.searchParams.get("zip_code") === "9999999")
-          return new Response(null, { status: 503 });
+        if (url.searchParams.get("zip_code") === "9999999") {
+          const body = new ReadableStream({
+            cancel() {
+              throw new Error("response cleanup failure");
+            },
+          });
+          return new Response(body, { status: 503 });
+        }
         const name =
           url.pathname === "/recommend"
             ? "postal"
@@ -30,11 +37,11 @@ const app = createApp(
   ),
 );
 
-async function connect() {
+async function connect(server = app) {
   const client = new Client({ name: "tokubai-mcp-test", version: "1.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL("http://localhost/mcp"), {
     fetch: async (input, init) =>
-      app.request(input instanceof Request ? input : String(input), init),
+      server.request(input instanceof Request ? input : String(input), init),
   });
   await client.connect(transport);
   return client;
@@ -85,7 +92,8 @@ test("independent concurrent clients may reuse JSON-RPC IDs without sharing resu
   }
 });
 
-test("returns MCP tool errors for invalid inputs and upstream failures", async () => {
+test("returns MCP tool errors for invalid inputs and upstream failures", async (t) => {
+  const logger = t.mock.method(console, "error", () => {});
   const client = await connect();
   try {
     const badInput = await client.callTool({
@@ -99,9 +107,106 @@ test("returns MCP tool errors for invalid inputs and upstream failures", async (
     });
     assert.equal(upstream.isError, true);
     assert.match((upstream.content as { text: string }[])[0]!.text, /UPSTREAM_ERROR/);
+    assert.equal(logger.mock.callCount(), 1);
+    const log = logger.mock.calls[0]!.arguments[0];
+    assert.equal(log.annotations.tool, "search_stores_by_postal_code");
+    assert.equal(log.annotations.code, "UPSTREAM_ERROR");
+    assert.match(log.cause, /HTTP 503/);
+    assert.match(log.cause, /response cleanup failure/);
   } finally {
     await client.close();
   }
+});
+
+test("logs original fetch and JSON exceptions without returning their details", async (t) => {
+  const logger = t.mock.method(console, "error", () => {});
+  const client = await connect(
+    createApp(
+      new TokubaiClient(
+        new HtmlClient({
+          fetcher: async (input) => {
+            if (new URL(String(input)).pathname === "/shop_search_completion_keywords") {
+              return new Response("{", { headers: { "content-type": "application/json" } });
+            }
+            throw new TypeError("socket failure");
+          },
+        }),
+      ),
+    ),
+  );
+  try {
+    const network = await client.callTool({
+      name: "search_stores_by_postal_code",
+      arguments: { postal_code: "160-0022" },
+    });
+    const response = (network.content as { text: string }[])[0]!.text;
+    assert.equal(network.isError, true);
+    assert.match(response, /NETWORK_ERROR/);
+    assert.doesNotMatch(response, /socket failure/);
+
+    const invalidJson = await client.callTool({
+      name: "search_stores",
+      arguments: { region: "新宿" },
+    });
+    assert.equal(invalidJson.isError, true);
+    assert.match((invalidJson.content as { text: string }[])[0]!.text, /INVALID_RESPONSE/);
+
+    assert.equal(logger.mock.callCount(), 2);
+    const [networkLog, jsonLog] = logger.mock.calls.map((call) => call.arguments[0]);
+    assert.equal(networkLog.annotations.code, "NETWORK_ERROR");
+    assert.match(networkLog.cause, /TypeError: socket failure\n\s+at /);
+    assert.equal(jsonLog.annotations.code, "INVALID_RESPONSE");
+    assert.match(jsonLog.cause, /SyntaxError/);
+  } finally {
+    await client.close();
+  }
+});
+
+test("logs an unexpected defect and returns a generic MCP tool error", async (t) => {
+  const logger = t.mock.method(console, "error", () => {});
+  class BrokenClient extends TokubaiClient {
+    override searchByPostalCodeEffect(): never {
+      throw new Error("unexpected tool failure");
+    }
+  }
+  const client = await connect(createApp(new BrokenClient()));
+  try {
+    const result = await client.callTool({
+      name: "search_stores_by_postal_code",
+      arguments: { postal_code: "160-0022" },
+    });
+    assert.equal(result.isError, true);
+    const response = (result.content as { text: string }[])[0]!.text;
+    assert.match(response, /INTERNAL_ERROR/);
+    assert.doesNotMatch(response, /unexpected tool failure/);
+    assert.equal(logger.mock.callCount(), 1);
+    const log = logger.mock.calls[0]!.arguments[0];
+    assert.equal(log.annotations.code, "INTERNAL_ERROR");
+    assert.match(log.cause, /Error: unexpected tool failure\n\s+at /);
+  } finally {
+    await client.close();
+  }
+});
+
+test("logs both transport setup and cleanup exceptions", async (t) => {
+  const logger = t.mock.method(console, "error", () => {});
+  t.mock.method(StreamableHTTPTransport.prototype, "start", async () => {
+    throw new Error("transport start failure");
+  });
+  t.mock.method(StreamableHTTPTransport.prototype, "close", async () => {
+    throw new Error("transport close failure");
+  });
+  const response = await app.request("/mcp", { method: "POST" });
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), {
+    jsonrpc: "2.0",
+    id: null,
+    error: { code: -32603, message: "Internal error" },
+  });
+  assert.equal(logger.mock.callCount(), 2);
+  const [cleanup, request] = logger.mock.calls.map((call) => call.arguments[0]);
+  assert.match(cleanup.cause, /transport close failure/);
+  assert.match(request.cause, /transport start failure/);
 });
 
 test("stateless endpoint rejects GET and DELETE and exposes a health response", async () => {

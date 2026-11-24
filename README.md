@@ -36,6 +36,12 @@ pnpm test:live https://your-worker.example/mcp
 
 `test:live` は実サイトへの通信を伴います。
 
+## エラーログ
+
+ローカルでは `pnpm dev` のターミナル、デプロイ先では Cloudflare ダッシュボードの **Observability → Logs** で確認できます。
+MCP ツールの失敗は `MCP tool failed` で検索し、`annotations` の `tool`、`requestId`、`code` と、例外の原因とスタックトレースを含む `cause` を確認してください。
+MCP の接続・リクエスト処理・終了時の例外は `MCP protocol error`、`MCP request failed`、`MCP server close failed` で検索できます。
+
 ## デプロイ
 
 Cloudflare アカウントを用意し、認証を追加したうえで実行してください。

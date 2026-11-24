@@ -1,12 +1,13 @@
 import { load } from "cheerio/slim";
 import { z } from "zod";
-import { TOKUBAI_ORIGIN, TokubaiError, tokubaiUrl } from "./http.ts";
+import { TokubaiError } from "./errors.ts";
+import { TOKUBAI_ORIGIN, tokubaiUrl } from "./http.ts";
 import type { Flyer, SearchResult, Store } from "./schemas.ts";
 
 export const cleanText = (text: string): string => text.replace(/\s+/g, " ").trim();
 const nullableText = (text: string): string | null => cleanText(text) || null;
-const parseError = (message: string): never => {
-  throw new TokubaiError("PARSE_ERROR", message);
+const parseError = (message: string, cause?: unknown): never => {
+  throw new TokubaiError("PARSE_ERROR", message, { cause });
 };
 
 export function storeId(url: URL): string {
@@ -178,11 +179,13 @@ export function parseViewerPage(html: string, sourceUrl: string): Flyer[] {
   let raw: unknown;
   try {
     raw = JSON.parse($("[data-view-state]").first().attr("data-view-state") ?? "");
-  } catch {
-    return parseError("チラシ viewer の埋め込みデータを読み取れませんでした。");
+  } catch (cause) {
+    return parseError("チラシ viewer の埋め込みデータを読み取れませんでした。", cause);
   }
   const result = viewerStateSchema.safeParse(raw);
-  if (!result.success) return parseError("チラシ viewer のデータ構造が変更されています。");
+  if (!result.success) {
+    return parseError("チラシ viewer のデータ構造が変更されています。", result.error);
+  }
   const seen = new Set<string>();
   return result.data.leaflets.map((leaflet) => {
     const id = String(leaflet.id);
